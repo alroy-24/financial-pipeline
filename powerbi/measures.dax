@@ -1,0 +1,108 @@
+// Calculated columns and measures for the dashboard. All the analysis lives here.
+//
+// Power BI Desktop: select the Customers table, then Table tools > New column (for the
+// three columns) or New measure (for the measures), and paste one definition at a time.
+// tools/check_numbers.py recomputes the same numbers in pandas.
+
+
+// ===== Calculated columns (table: Customers) =====
+
+// The brief's ranges overlap (14-19, 19-25, ...), so each boundary age goes to the
+// older group: 19 is a Young Adult.
+Age Group =
+SWITCH(
+    TRUE(),
+    ISBLANK(Customers[Age]), "Unknown",
+    Customers[Age] < 19, "Teen",
+    Customers[Age] < 25, "Young Adult",
+    Customers[Age] < 35, "Old Adult",
+    Customers[Age] < 45, "Old1",
+    "Old2"
+)
+
+// Sort key: select Age Group, then Column tools > Sort by column > Age Group Order,
+// so the groups appear youngest to oldest instead of alphabetically.
+Age Group Order =
+SWITCH(Customers[Age Group], "Teen", 1, "Young Adult", 2, "Old Adult", 3, "Old1", 4, "Old2", 5, 6)
+
+// The brief's credit score scale goes from Good = 3 down to Bad = 0, which matches
+// Credit_Mix (Good / Standard / Bad); Standard sits halfway. The separate Credit_Score
+// column uses Poor instead of Bad and is empty for a third of the rows.
+Credit Score Num =
+SWITCH(Customers[Credit_Mix], "Good", 3, "Standard", 1.5, "Bad", 0)
+
+
+// ===== Measures (home table: Customers) =====
+
+// Page 1 KPI cards (brief item 1)
+Avg Annual Income = AVERAGE(Customers[Annual_Income])
+
+Avg Monthly Balance = AVERAGE(Customers[Monthly_Balance])
+
+Avg Delayed Payments = AVERAGE(Customers[Num_of_Delayed_Payment])
+
+// Stored as a percentage (32.3), so divide by 100 and format the measure as Percentage.
+Avg Credit Utilization = DIVIDE(AVERAGE(Customers[Credit_Utilization_Ratio]), 100)
+
+// Counts. Customer Count is for "how many people"; Records counts customer-months,
+// for "how often" (payment behaviour frequency).
+Customer Count = DISTINCTCOUNT(Customers[Customer_ID])
+
+Records = COUNTROWS(Customers)
+
+// Age vs change in credit limit (brief item 2)
+Avg Changed Credit Limit = AVERAGE(Customers[Changed_Credit_Limit])
+
+// DAX has no correlation function, so Pearson r is built by hand, over the rows that
+// have both values: a row with one of them blank would still count in n but add
+// nothing to the sums, which skews r.
+// DAX names are case-insensitive, so a variable can't be called "sumX" (that's the
+// SUMX function) or "Rows"; the engine rejects the whole measure.
+Age-CreditLimit Correlation =
+VAR ValidRows =
+    FILTER(Customers, NOT ISBLANK(Customers[Age]) && NOT ISBLANK(Customers[Changed_Credit_Limit]))
+VAR n           = COUNTROWS(ValidRows)
+VAR SumAge      = SUMX(ValidRows, Customers[Age])
+VAR SumLimit    = SUMX(ValidRows, Customers[Changed_Credit_Limit])
+VAR SumAgeLimit = SUMX(ValidRows, Customers[Age] * Customers[Changed_Credit_Limit])
+VAR SumAgeSq    = SUMX(ValidRows, Customers[Age] ^ 2)
+VAR SumLimitSq  = SUMX(ValidRows, Customers[Changed_Credit_Limit] ^ 2)
+RETURN
+    DIVIDE(
+        n * SumAgeLimit - SumAge * SumLimit,
+        SQRT((n * SumAgeSq - SumAge ^ 2) * (n * SumLimitSq - SumLimit ^ 2))
+    )
+
+// Loan outreach (brief items 6-7): an age is a potential loan customer when its
+// average number of credit inquiries is above the brief's 7.5.
+Avg Credit Inquiries = AVERAGE(Customers[Num_Credit_Inquiries])
+
+Potential Customer =
+IF([Avg Credit Inquiries] > 7.5, "Potential customer")
+
+// Lifetime value per age and its promotion (brief item 8). The weights and bands are
+// the brief's.
+LTV Score =
+    0.30  * AVERAGE(Customers[Annual_Income])
+  - 0.15  * AVERAGE(Customers[Delay_from_due_date])
+  + 0.40  * AVERAGE(Customers[Credit Score Num])
+  + 0.075 * AVERAGE(Customers[Amount_invested_monthly])
+  + 0.075 * AVERAGE(Customers[Monthly_Balance])
+
+Promotion =
+SWITCH(
+    TRUE(),
+    ISBLANK([LTV Score]), BLANK(),
+    [LTV Score] > 80000, "30% off on online purchases + home loan at 4% interest",
+    [LTV Score] >= 60000, "15% off on online purchases + 10000 worth gift hampers",
+    [LTV Score] >= 50000, "Any loan at 5% interest rate",
+    "No promotion (LTV below 50,000)"
+)
+
+// Loans and credit cards by age (brief item 9)
+Avg Loans = AVERAGE(Customers[Num_of_Loan])
+
+Avg Credit Cards = AVERAGE(Customers[Num_Credit_Card])
+
+// Loan count distribution (brief item 10): customers holding each loan type.
+Customers With Loan Type = DISTINCTCOUNT(LoanTypes[Customer_ID])
